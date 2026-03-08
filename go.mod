@@ -36,7 +36,7 @@ require (
 )
 
 require (
-	github.com/a2aproject/a2a-go/v2 v2.0.0-20260308140223-02ab3e4d6c6b
+	github.com/a2aproject/a2a-go/v2 v2.0.0-20260308152056-1f6c51b62c26
 	golang.org/x/mod v0.33.0 // indirect
 )
 

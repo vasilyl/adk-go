@@ -13,6 +13,8 @@
 // limitations under the License.
 
 // Package adka2a allows to expose ADK agents via A2A.
+//
+// Deprecated: Use google.golang.org/adk/server/adka2a/v1 instead.
 package adka2a
 
 import (
@@ -43,34 +45,68 @@ type AfterEventCallback func(ctx ExecutorContext, event *session.Event, processe
 type AfterExecuteCallback func(ctx ExecutorContext, finalEvent *a2a.TaskStatusUpdateEvent, err error) error
 
 // A2APartConverter is a custom converter for converting A2A parts to GenAI parts.
+// Implementations should generally remember to leverage adka2a.ToGenAiPart for default conversions
+// nil returns are considered intentionally dropped parts.
 type A2APartConverter func(ctx context.Context, a2aEvent a2a.Event, part a2a.Part) (*genai.Part, error)
 
 // GenAIPartConverter is a custom converter for converting GenAI parts to A2A parts.
+// Implementations should generally remember to leverage adka2a.ToA2APart for default conversions
+// nil returns are considered intentionally dropped parts.
 type GenAIPartConverter func(ctx context.Context, adkEvent *session.Event, part *genai.Part) (a2a.Part, error)
 
 // OutputMode controls how artifacts are produced.
 type OutputMode string
 
 const (
-	OutputArtifactPerRun   OutputMode = "artifact-per-run"
+	// OutputArtifactPerRun produces a single artifact per [runner.Runner.Run].
+	OutputArtifactPerRun OutputMode = "artifact-per-run"
+	// OutputArtifactPerEvent produces an artifact per non-partial [session.Event].
+	// While agent is emitting events an artifact is build incrementally (parts are append to it).
+	// The next partial event replaces accumulated contents and seals the artifact, meaning
+	// the next event from this agent will create a new artifact.
 	OutputArtifactPerEvent OutputMode = "artifact-per-event"
 )
 
 // ExecutorConfig allows to configure Executor.
 type ExecutorConfig struct {
-	RunnerConfig          runner.Config
-	RunConfig             agent.RunConfig
+	// RunnerConfig is the configuration which will be used for [runner.New] during A2A Execute invocation.
+	RunnerConfig runner.Config
+
+	// RunConfig is the configuration which will be passed to [runner.Runner.Run] during A2A Execute invocation.
+	RunConfig agent.RunConfig
+
+	// BeforeExecuteCallback is the callback which will be called before an execution is started.
+	// It can be used to instrument a context or prevent the execution by returning an error.
 	BeforeExecuteCallback BeforeExecuteCallback
-	AfterEventCallback    AfterEventCallback
-	AfterExecuteCallback  AfterExecuteCallback
-	A2APartConverter      A2APartConverter
-	GenAIPartConverter    GenAIPartConverter
-	OutputMode            OutputMode
+
+	// AfterEventCallback is the callback which will be called after an ADK event is successfully converted to an A2A event.
+	// This gives an opportunity to enrich the event with additional metadata or abort the execution by returning an error.
+	// The callback is not invoked for errors originating from ADK or event processing. Such errors are converted to
+	// TaskStatusUpdateEvent-s with TaskStateFailed state. If needed these can be intercepted using AfterExecuteCallback.
+	AfterEventCallback AfterEventCallback
+
+	// AfterExecuteCallback is the callback which will be called after an execution resolved into a completed or failed task.
+	// This gives an opportunity to enrich the event with additional metadata or log it.
+	AfterExecuteCallback AfterExecuteCallback
+
+	// A2APartConverter is a custom converter for converting A2A parts to GenAI parts.
+	// Implementations should generally remember to leverage [adka2a.ToGenAiPart] for default conversions
+	// nil returns are considered intentionally dropped parts.
+	A2APartConverter A2APartConverter
+
+	// GenAIPartConverter is a custom converter for converting GenAI parts to A2A parts.
+	// Implementations should generally remember to leverage [adka2a.ToA2APart] for default conversions
+	// nil returns are considered intentionally dropped parts.
+	GenAIPartConverter GenAIPartConverter
+
+	// OutputMode controls how artifacts are produced. Can be [OutputArtifactPerRun] or [OutputArtifactPerEvent].
+	// Defaults to [OutputArtifactPerRun].
+	OutputMode OutputMode
 }
 
 var _ a2asrv.AgentExecutor = (*Executor)(nil)
 
-// Executor invokes an ADK agent and translates [session.Event]-s to [a2a.Event]-s.
+// Executor is the legacy AgentExecutor implementation which delegates to [v1.Executor].
 type Executor struct {
 	impl *v1.Executor
 }
@@ -84,14 +120,10 @@ func NewExecutor(config ExecutorConfig) *Executor {
 	}
 
 	if config.BeforeExecuteCallback != nil {
-		v1Config.BeforeExecuteCallback = func(ctx context.Context, reqCtx *v2asrv.ExecutorContext) (context.Context, error) {
+		v1Config.BeforeExecuteCallback = func(ctx context.Context, execCtx *v2asrv.ExecutorContext) (context.Context, error) {
 			// RequestContext conversion might be tricky as there is no direct ToV0RequestContext in a2av0 (it's usually the other way)
 			// But for now let's hope it's not strictly needed or provide a placeholder.
-			return config.BeforeExecuteCallback(ctx, &a2asrv.RequestContext{
-				ContextID:  reqCtx.ContextID,
-				Message:    a2av0.FromV1Message(reqCtx.Message),
-				StoredTask: a2av0.FromV1Task(reqCtx.StoredTask),
-			})
+			return config.BeforeExecuteCallback(ctx, toRequestContext(execCtx))
 		}
 	}
 
@@ -128,51 +160,11 @@ func NewExecutor(config ExecutorConfig) *Executor {
 }
 
 func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	var user *v2asrv.User
-	var reqMeta map[string][]string
-	if callCtx, ok := a2asrv.CallContextFrom(ctx); ok {
-		user = &v2asrv.User{
-			Name:          callCtx.User.Name(),
-			Authenticated: callCtx.User.Authenticated(),
-			Attributes:    map[string]any{"legacy_user": user},
-		}
-		for k, v := range callCtx.RequestMeta().List() {
-			reqMeta[k] = v
-		}
-	}
-
-	storedTask, err := a2av0.ToV1Task(reqCtx.StoredTask)
+	execCtx, err := toExecutorContext(ctx, reqCtx)
 	if err != nil {
 		return err
 	}
-
-	var relatedTasks []*v2a2a.Task
-	for _, t := range reqCtx.RelatedTasks {
-		v1Task, err := a2av0.ToV1Task(t)
-		if err != nil {
-			continue
-		}
-		relatedTasks = append(relatedTasks, v1Task)
-	}
-
-	v1Msg, _ := a2av0.ToV1Message(reqCtx.Message)
-	v2ReqCtx := &v2asrv.ExecutorContext{
-		ContextID:     reqCtx.ContextID,
-		Message:       v1Msg,
-		TaskID:        v2a2a.TaskID(reqCtx.TaskID),
-		StoredTask:    storedTask,
-		RelatedTasks:  relatedTasks,
-		Metadata:      reqCtx.Metadata,
-		User:          user,
-		ServiceParams: v2asrv.NewServiceParams(reqMeta),
-	}
-	if reqCtx.StoredTask != nil {
-		v1Task, _ := a2av0.ToV1Task(reqCtx.StoredTask)
-		v2ReqCtx.StoredTask = v1Task
-		v2ReqCtx.TaskID = v1Task.ID
-	}
-
-	for event, err := range e.impl.Execute(ctx, v2ReqCtx) {
+	for event, err := range e.impl.Execute(ctx, execCtx) {
 		if err != nil {
 			return err
 		}
@@ -241,9 +233,61 @@ type executorContextWrapper struct {
 
 func (w executorContextWrapper) RequestContext() *a2asrv.RequestContext {
 	v1Ctx := w.ExecutorContext.RequestContext()
-	return &a2asrv.RequestContext{
-		ContextID:  v1Ctx.ContextID,
-		Message:    a2av0.FromV1Message(v1Ctx.Message),
-		StoredTask: a2av0.FromV1Task(v1Ctx.StoredTask),
+	return toRequestContext(v1Ctx)
+}
+
+func toRequestContext(ctx *v2asrv.ExecutorContext) *a2asrv.RequestContext {
+	var relatedTasks []*a2a.Task
+	for _, t := range ctx.RelatedTasks {
+		relatedTasks = append(relatedTasks, a2av0.FromV1Task(t))
 	}
+	return &a2asrv.RequestContext{
+		ContextID:    ctx.ContextID,
+		Message:      a2av0.FromV1Message(ctx.Message),
+		StoredTask:   a2av0.FromV1Task(ctx.StoredTask),
+		TaskID:       a2a.TaskID(ctx.TaskID),
+		Metadata:     ctx.Metadata,
+		RelatedTasks: relatedTasks,
+	}
+}
+
+func toExecutorContext(ctx context.Context, reqCtx *a2asrv.RequestContext) (*v2asrv.ExecutorContext, error) {
+	var user *v2asrv.User
+	reqMeta := make(map[string][]string)
+	if callCtx, ok := a2asrv.CallContextFrom(ctx); ok {
+		user = &v2asrv.User{Name: callCtx.User.Name(), Authenticated: callCtx.User.Authenticated()}
+		for k, v := range callCtx.RequestMeta().List() {
+			reqMeta[k] = v
+		}
+	}
+
+	storedTask, err := a2av0.ToV1Task(reqCtx.StoredTask)
+	if err != nil {
+		return nil, err
+	}
+
+	var relatedTasks []*v2a2a.Task
+	for _, t := range reqCtx.RelatedTasks {
+		v1Task, err := a2av0.ToV1Task(t)
+		if err != nil {
+			return nil, err
+		}
+		relatedTasks = append(relatedTasks, v1Task)
+	}
+
+	v1Msg, err := a2av0.ToV1Message(reqCtx.Message)
+	if err != nil {
+		return nil, err
+	}
+
+	return &v2asrv.ExecutorContext{
+		ContextID:     reqCtx.ContextID,
+		Message:       v1Msg,
+		TaskID:        v2a2a.TaskID(reqCtx.TaskID),
+		StoredTask:    storedTask,
+		RelatedTasks:  relatedTasks,
+		Metadata:      reqCtx.Metadata,
+		User:          user,
+		ServiceParams: v2asrv.NewServiceParams(reqMeta),
+	}, nil
 }

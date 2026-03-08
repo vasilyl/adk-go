@@ -101,7 +101,7 @@ func ToSessionEvent(ctx agent.InvocationContext, event a2a.Event) (*session.Even
 		return event, nil
 
 	case *a2a.TaskStatusUpdateEvent:
-		if v.Status.State.Terminal() {
+		if v.Status.State.Terminal() || v.Status.State == a2a.TaskStateInputRequired {
 			return finalTaskStatusUpdateToEvent(ctx, v)
 		}
 		if v.Status.Message == nil {
@@ -121,8 +121,10 @@ func ToSessionEvent(ctx agent.InvocationContext, event a2a.Event) (*session.Even
 		if err := processA2AMeta(v, event); err != nil {
 			return nil, fmt.Errorf("metadata processing failed: %w", err)
 		}
-		for _, part := range event.Content.Parts {
-			part.Thought = true
+		for _, p := range event.Content.Parts {
+			if p.Text != "" {
+				p.Thought = true
+			}
 		}
 		event.Partial = true
 		return event, nil

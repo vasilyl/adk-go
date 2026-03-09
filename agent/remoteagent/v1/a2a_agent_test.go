@@ -583,6 +583,7 @@ func TestRemoteAgent_ADK2A2A(t *testing.T) {
 					Artifact:  &a2a.Artifact{ID: artifactEvent.Artifact.ID, Parts: a2a.ContentParts{a2a.NewTextPart("2")}},
 					Append:    true,
 				},
+
 				&a2a.TaskArtifactUpdateEvent{
 					TaskID:    task.ID,
 					ContextID: task.ContextID,
@@ -1141,9 +1142,11 @@ func TestRemoteAgent_ErrorEventIfNoCompatibleTransport(t *testing.T) {
 		Name: name,
 	}
 	remoteAgent, err := NewA2A(A2AConfig{
-		Name:          name,
-		ClientFactory: a2aclient.NewFactory(a2aclient.WithDefaultsDisabled()),
-		AgentCard:     cardResource,
+		Name:      name,
+		AgentCard: cardResource,
+		MessageSenderProvider: NewA2AMessageSenderProvider(
+			a2aclient.NewFactory(a2aclient.WithDefaultsDisabled()),
+		),
 	})
 	if err != nil {
 		t.Fatalf("remoteagent.NewA2A() error = %v", err)

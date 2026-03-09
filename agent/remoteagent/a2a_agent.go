@@ -18,11 +18,15 @@
 package remoteagent
 
 import (
+	"context"
 	"fmt"
+	"iter"
 
 	"github.com/a2aproject/a2a-go/a2a"
 	"github.com/a2aproject/a2a-go/a2aclient"
 	"github.com/a2aproject/a2a-go/a2aclient/agentcard"
+	v2a2a "github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2acompat/a2av0"
 
 	"google.golang.org/adk/agent"
 	v1 "google.golang.org/adk/agent/remoteagent/v1"
@@ -103,5 +107,122 @@ func NewA2A(cfg A2AConfig) (agent.Agent, error) {
 		return nil, fmt.Errorf("either AgentCard or AgentCardSource must be provided")
 	}
 
-	return v1.NewA2A(v1.A2AConfig{})
+	v1Cfg := v1.A2AConfig{
+		Name:                 cfg.Name,
+		Description:          cfg.Description,
+		AgentCardSource:      cfg.AgentCardSource,
+		BeforeAgentCallbacks: cfg.BeforeAgentCallbacks,
+		AfterAgentCallbacks:  cfg.AfterAgentCallbacks,
+	}
+
+	if cfg.AgentCard != nil {
+		v1Cfg.AgentCard = a2av0.ToV1AgentCard(cfg.AgentCard)
+	}
+
+	if cfg.MessageSendConfig != nil {
+		req, _ := a2av0.ToV1SendMessageRequest(&a2a.MessageSendParams{Config: cfg.MessageSendConfig})
+		v1Cfg.MessageSendConfig = req.Config
+	}
+
+	if cfg.ClientFactory != nil {
+		v1Cfg.MessageSenderProvider = func(ctx agent.InvocationContext, card *v2a2a.AgentCard) (v1.A2AMessageSender, error) {
+			legacyCard := a2av0.FromV1AgentCard(card)
+			var client *a2aclient.Client
+			var err error
+			if cfg.ClientFactory != nil {
+				client, err = cfg.ClientFactory.CreateFromCard(ctx, legacyCard)
+			} else {
+				client, err = a2aclient.NewFromCard(ctx, legacyCard)
+			}
+			if err != nil {
+				return nil, err
+			}
+			return &compatSender{client: client}, nil
+		}
+	}
+
+	if cfg.Converter != nil {
+		v1Cfg.Converter = func(ctx agent.ReadonlyContext, req *v2a2a.SendMessageRequest, event v2a2a.Event, err error) (*session.Event, error) {
+			legacyReq := a2av0.FromV1SendMessageRequest(req)
+			legacyEvent, _ := a2av0.FromV1Event(event)
+			return cfg.Converter(ctx, legacyReq, legacyEvent, err)
+		}
+	}
+
+	if cfg.BeforeRequestCallbacks != nil {
+		v1Cfg.BeforeRequestCallbacks = make([]v1.BeforeA2ARequestCallback, 0, len(cfg.BeforeRequestCallbacks))
+		for _, cb := range cfg.BeforeRequestCallbacks {
+			v1Cfg.BeforeRequestCallbacks = append(v1Cfg.BeforeRequestCallbacks, func(ctx agent.CallbackContext, req *v2a2a.SendMessageRequest) (*session.Event, error) {
+				legacyReq := a2av0.FromV1SendMessageRequest(req)
+				resp, err := cb(ctx, legacyReq)
+				if err != nil {
+					return nil, err
+				}
+				if resp != nil {
+					return resp, nil
+				}
+				v1Req, _ := a2av0.ToV1SendMessageRequest(legacyReq)
+				*req = *v1Req
+				return nil, nil
+			})
+		}
+	}
+
+	if cfg.AfterRequestCallbacks != nil {
+		v1Cfg.AfterRequestCallbacks = make([]v1.AfterA2ARequestCallback, 0, len(cfg.AfterRequestCallbacks))
+		for _, cb := range cfg.AfterRequestCallbacks {
+			v1Cfg.AfterRequestCallbacks = append(v1Cfg.AfterRequestCallbacks, func(ctx agent.CallbackContext, req *v2a2a.SendMessageRequest, resp *session.Event, err error) (*session.Event, error) {
+				legacyReq := a2av0.FromV1SendMessageRequest(req)
+				newResp, newErr := cb(ctx, legacyReq, resp, err)
+				v1Req, _ := a2av0.ToV1SendMessageRequest(legacyReq)
+				*req = *v1Req
+				return newResp, newErr
+			})
+		}
+	}
+
+	return v1.NewA2A(v1Cfg)
+}
+
+type compatSender struct {
+	client *a2aclient.Client
+}
+
+func (s *compatSender) SendMessage(ctx context.Context, req *v2a2a.SendMessageRequest) (v2a2a.SendMessageResult, error) {
+	legacyReq := a2av0.FromV1SendMessageRequest(req)
+	legacyResp, err := s.client.SendMessage(ctx, legacyReq)
+	if err != nil {
+		return nil, err
+	}
+	v1Event, err := a2av0.ToV1Event(legacyResp)
+	if err != nil {
+		return nil, err
+	}
+	res, ok := v1Event.(v2a2a.SendMessageResult)
+	if !ok {
+		return nil, fmt.Errorf("converted event does not implement SendMessageResult: %T", v1Event)
+	}
+	return res, nil
+}
+
+func (s *compatSender) SendStreamingMessage(ctx context.Context, req *v2a2a.SendMessageRequest) iter.Seq2[v2a2a.Event, error] {
+	return func(yield func(v2a2a.Event, error) bool) {
+		legacyReq := a2av0.FromV1SendMessageRequest(req)
+		for legacyEvent, err := range s.client.SendStreamingMessage(ctx, legacyReq) {
+			if err != nil {
+				if !yield(nil, err) {
+					return
+				}
+				continue
+			}
+			v1Event, err := a2av0.ToV1Event(legacyEvent)
+			if !yield(v1Event, err) {
+				return
+			}
+		}
+	}
+}
+
+func (s *compatSender) Destroy() error {
+	return s.client.Destroy()
 }

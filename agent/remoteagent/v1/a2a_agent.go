@@ -92,8 +92,8 @@ type A2AConfig struct {
 	// callbacks will be skipped.
 	AfterAgentCallbacks []agent.AfterAgentCallback
 
-	// ClientFactory can be used to provide a set of a2aclient.Client configurations.
-	ClientFactory *a2aclient.Factory
+	// MessageSenderProvider can be used to provide a custom implementation of A2A message sending.
+	MessageSenderProvider A2AMessageSenderProvider
 	// MessageSendConfig is attached to a2a.MessageSendParams sent on every agent invocation.
 	MessageSendConfig *a2a.SendMessageConfig
 }
@@ -104,8 +104,11 @@ func NewA2A(cfg A2AConfig) (agent.Agent, error) {
 	if cfg.AgentCard == nil && cfg.AgentCardSource == "" {
 		return nil, fmt.Errorf("either AgentCard or AgentCardSource must be provided")
 	}
+	if cfg.MessageSenderProvider == nil {
+		cfg.MessageSenderProvider = NewA2AMessageSenderProvider(a2aclient.NewFactory())
+	}
 
-	remoteAgent := &a2aAgent{resolvedCard: cfg.AgentCard}
+	remoteAgent := &a2aAgent{}
 	return agent.New(agent.Config{
 		Name:                 cfg.Name,
 		Description:          cfg.Description,
@@ -117,9 +120,7 @@ func NewA2A(cfg A2AConfig) (agent.Agent, error) {
 	})
 }
 
-type a2aAgent struct {
-	resolvedCard *a2a.AgentCard
-}
+type a2aAgent struct{}
 
 func (a *a2aAgent) run(ctx agent.InvocationContext, cfg A2AConfig) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
@@ -128,19 +129,13 @@ func (a *a2aAgent) run(ctx agent.InvocationContext, cfg A2AConfig) iter.Seq2[*se
 			yield(toErrorEvent(ctx, fmt.Errorf("agent card resolution failed: %w", err)), nil)
 			return
 		}
-		a.resolvedCard = card
 
-		var client *a2aclient.Client
-		if cfg.ClientFactory != nil {
-			client, err = cfg.ClientFactory.CreateFromCard(ctx, card)
-		} else {
-			client, err = a2aclient.NewFromCard(ctx, card)
-		}
+		sender, err := cfg.MessageSenderProvider(ctx, card)
 		if err != nil {
-			yield(toErrorEvent(ctx, fmt.Errorf("client creation failed: %w", err)), nil)
+			yield(toErrorEvent(ctx, fmt.Errorf("sender creation failed: %w", err)), nil)
 			return
 		}
-		defer destroy(client)
+		defer destroy(sender)
 
 		msg, err := newMessage(ctx)
 		if err != nil {
@@ -202,12 +197,12 @@ func (a *a2aAgent) run(ctx agent.InvocationContext, cfg A2AConfig) iter.Seq2[*se
 		}
 
 		if ctx.RunConfig().StreamingMode == agent.StreamingModeNone {
-			a2aEvent, a2aErr := client.SendMessage(ctx, req)
+			a2aEvent, a2aErr := sender.SendMessage(ctx, req)
 			processEvent(a2aEvent, a2aErr)
 			return
 		}
 
-		for a2aEvent, a2aErr := range client.SendStreamingMessage(ctx, req) {
+		for a2aEvent, a2aErr := range sender.SendStreamingMessage(ctx, req) {
 			if !processEvent(a2aEvent, a2aErr) {
 				return
 			}
@@ -268,7 +263,7 @@ func resolveAgentCard(ctx agent.InvocationContext, cfg A2AConfig) (*a2a.AgentCar
 	return &card, nil
 }
 
-func destroy(client *a2aclient.Client) {
+func destroy(client A2AMessageSender) {
 	// TODO(yarolegovich): log ignored error
 	_ = client.Destroy()
 }

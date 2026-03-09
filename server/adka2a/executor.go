@@ -121,21 +121,45 @@ func NewExecutor(config ExecutorConfig) *Executor {
 
 	if config.BeforeExecuteCallback != nil {
 		v1Config.BeforeExecuteCallback = func(ctx context.Context, execCtx *v2asrv.ExecutorContext) (context.Context, error) {
-			// RequestContext conversion might be tricky as there is no direct ToV0RequestContext in a2av0 (it's usually the other way)
-			// But for now let's hope it's not strictly needed or provide a placeholder.
-			return config.BeforeExecuteCallback(ctx, toRequestContext(execCtx))
+			legacyReqCtx := toRequestContext(execCtx)
+			newCtx, err := config.BeforeExecuteCallback(ctx, legacyReqCtx)
+			if err != nil {
+				return nil, err
+			}
+			v1ExecCtx, err := toExecutorContext(newCtx, legacyReqCtx)
+			if err != nil {
+				return nil, err
+			}
+			*execCtx = *v1ExecCtx
+			return newCtx, nil
 		}
 	}
 
 	if config.AfterEventCallback != nil {
 		v1Config.AfterEventCallback = func(ctx v1.ExecutorContext, adkEvent *session.Event, a2aEvent *v2a2a.TaskArtifactUpdateEvent) error {
-			return config.AfterEventCallback(executorContextWrapper{ctx}, adkEvent, a2av0.FromV1TaskArtifactUpdateEvent(a2aEvent))
+			legacyEvent := a2av0.FromV1TaskArtifactUpdateEvent(a2aEvent)
+			if err := config.AfterEventCallback(executorContextWrapper{ctx}, adkEvent, legacyEvent); err != nil {
+				return err
+			}
+			newV1Event, _ := a2av0.ToV1Event(legacyEvent)
+			if converted, ok := newV1Event.(*v2a2a.TaskArtifactUpdateEvent); ok {
+				*a2aEvent = *converted
+			}
+			return nil
 		}
 	}
 
 	if config.AfterExecuteCallback != nil {
 		v1Config.AfterExecuteCallback = func(ctx v1.ExecutorContext, finalEvent *v2a2a.TaskStatusUpdateEvent, err error) error {
-			return config.AfterExecuteCallback(executorContextWrapper{ctx}, a2av0.FromV1TaskStatusUpdateEvent(finalEvent), err)
+			legacyEvent := a2av0.FromV1TaskStatusUpdateEvent(finalEvent)
+			if cbErr := config.AfterExecuteCallback(executorContextWrapper{ctx}, legacyEvent, err); cbErr != nil {
+				return cbErr
+			}
+			newV1Event, _ := a2av0.ToV1Event(legacyEvent)
+			if converted, ok := newV1Event.(*v2a2a.TaskStatusUpdateEvent); ok {
+				*finalEvent = *converted
+			}
+			return nil
 		}
 	}
 
@@ -181,13 +205,9 @@ func (e *Executor) Execute(ctx context.Context, reqCtx *a2asrv.RequestContext, q
 }
 
 func (e *Executor) Cancel(ctx context.Context, reqCtx *a2asrv.RequestContext, queue eventqueue.Queue) error {
-	v2ReqCtx := &v2asrv.ExecutorContext{
-		ContextID: reqCtx.ContextID,
-	}
-	if reqCtx.StoredTask != nil {
-		v1Task, _ := a2av0.ToV1Task(reqCtx.StoredTask)
-		v2ReqCtx.StoredTask = v1Task
-		v2ReqCtx.TaskID = v1Task.ID
+	v2ReqCtx, err := toExecutorContext(ctx, reqCtx)
+	if err != nil {
+		return err
 	}
 
 	for event, err := range e.impl.Cancel(ctx, v2ReqCtx) {

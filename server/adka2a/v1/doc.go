@@ -13,4 +13,4 @@
 // limitations under the License.
 
 // Package adka2a allows to expose ADK agents via A2A.
-package v1
+package adka2a

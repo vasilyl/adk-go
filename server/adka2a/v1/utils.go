@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package v1
+package adka2a
 
 import "github.com/a2aproject/a2a-go/v2/a2a"
 

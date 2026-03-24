@@ -1176,3 +1176,52 @@ func TestA2AMultiHopInputRequiredCancellation(t *testing.T) {
 		t.Fatalf("remoteTask.Status.State = %q, want %q", remoteTask.Status.State, a2a.TaskStateCanceled)
 	}
 }
+
+func TestA2ARemoteAgentErrorStoredInSession(t *testing.T) {
+	const errorMessage = "custom remote agent error"
+
+	errorAgent := utils.Must(agent.New(agent.Config{
+		Name: "error-agent",
+		Run: func(ctx agent.InvocationContext) iter.Seq2[*session.Event, error] {
+			return func(yield func(*session.Event, error) bool) {
+				yield(nil, errors.New(errorMessage))
+			}
+		},
+	}))
+	executorB := newAgentExecutor(errorAgent, nil, adka2a.OutputArtifactPerRun)
+	serverB := startA2AServer(executorB)
+	defer serverB.Close()
+
+	remoteAgent := newA2ARemoteAgent(t, "remote-agent", serverB)
+	serviceA := session.InMemoryService()
+	executorA := newAgentExecutor(remoteAgent, serviceA, adka2a.OutputArtifactPerRun)
+	serverA := startA2AServer(executorA)
+	defer serverA.Close()
+
+	ctx := t.Context()
+	client := newA2AClient(t, serverA)
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.TextPart{Text: "do something"})
+	msg.ContextID = a2a.NewContextID()
+
+	task := mustSendMessage(t, client, msg)
+
+	if task.Status.State != a2a.TaskStateFailed {
+		t.Fatalf("task state = %q, want %q", task.Status.State, a2a.TaskStateFailed)
+	}
+
+	fullSessionResp, err := serviceA.Get(ctx, &session.GetRequest{
+		AppName:   remoteAgent.Name(),
+		UserID:    "A2A_USER_" + msg.ContextID,
+		SessionID: msg.ContextID,
+	})
+	if err != nil {
+		t.Fatalf("serviceA.GetSession() error = %v", err)
+	}
+	events := fullSessionResp.Session.Events()
+	if events.Len() != 2 {
+		t.Fatalf("got event count = %d, want 2", events.Len())
+	}
+	if !strings.Contains(events.At(1).ErrorMessage, errorMessage) {
+		t.Fatalf("got event error message = %q, want containing %q", events.At(1).ErrorMessage, errorMessage)
+	}
+}

@@ -203,9 +203,6 @@ type mockV2Executor struct {
 
 func (e *mockV2Executor) Execute(ctx context.Context, execCtx *v2asrv.ExecutorContext) iter.Seq2[v2a2a.Event, error] {
 	return func(yield func(v2a2a.Event, error) bool) {
-		if !yield(v2a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
-			return
-		}
 		for _, ev := range e.events {
 			if !yield(ev, nil) {
 				return

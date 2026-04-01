@@ -209,8 +209,7 @@ type compatClient struct {
 }
 
 func (s *compatClient) SendMessage(ctx context.Context, req *v2a2a.SendMessageRequest) (v2a2a.SendMessageResult, error) {
-	legacyReq := a2av0.FromV1SendMessageRequest(req)
-	legacyResp, err := s.client.SendMessage(ctx, legacyReq)
+	legacyResp, err := s.client.SendMessage(ctx, a2av0.FromV1SendMessageRequest(req))
 	if err != nil {
 		return nil, err
 	}
@@ -227,8 +226,7 @@ func (s *compatClient) SendMessage(ctx context.Context, req *v2a2a.SendMessageRe
 
 func (s *compatClient) SendStreamingMessage(ctx context.Context, req *v2a2a.SendMessageRequest) iter.Seq2[v2a2a.Event, error] {
 	return func(yield func(v2a2a.Event, error) bool) {
-		legacyReq := a2av0.FromV1SendMessageRequest(req)
-		for legacyEvent, err := range s.client.SendStreamingMessage(ctx, legacyReq) {
+		for legacyEvent, err := range s.client.SendStreamingMessage(ctx, a2av0.FromV1SendMessageRequest(req)) {
 			if err != nil {
 				yield(nil, err)
 				return
@@ -241,8 +239,7 @@ func (s *compatClient) SendStreamingMessage(ctx context.Context, req *v2a2a.Send
 }
 
 func (s *compatClient) CancelTask(ctx context.Context, req *v2a2a.CancelTaskRequest) (*v2a2a.Task, error) {
-	legacyReq := a2av0.FromV1CancelTaskRequest(req)
-	legacyResp, err := s.client.CancelTask(ctx, legacyReq)
+	legacyResp, err := s.client.CancelTask(ctx, a2av0.FromV1CancelTaskRequest(req))
 	if err != nil {
 		return nil, err
 	}

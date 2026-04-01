@@ -173,8 +173,10 @@ func newA2AEventReplay(t *testing.T, events []a2a.Event) a2asrv.AgentExecutor {
 			return func(yield func(a2a.Event, error) bool) {
 				if len(events) > 0 {
 					if _, ok := events[0].(*a2a.Task); !ok {
-						if !yield(a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
-							return
+						if _, ok := events[0].(*a2a.Message); !ok {
+							if !yield(a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+								return
+							}
 						}
 					}
 				}
@@ -1304,6 +1306,11 @@ func TestRemoteAgent_CleanupCallback(t *testing.T) {
 
 			remoteTaskIDChan := make(chan a2a.TaskID, 1)
 			executor := &mockA2AExecutor{
+				cancelFn: func(ctx context.Context, reqCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+					return func(yield func(a2a.Event, error) bool) {
+						yield(a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateCanceled, nil), nil)
+					}
+				},
 				executeFn: func(ctx context.Context, reqCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 					return func(yield func(a2a.Event, error) bool) {
 						remoteTaskIDChan <- reqCtx.TaskID

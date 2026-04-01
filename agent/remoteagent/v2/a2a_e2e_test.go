@@ -381,6 +381,11 @@ func TestA2ACleanupPropagation(t *testing.T) {
 	// until it detects a context cancelation
 	remoteTaskIDChan, remoteCleanupCalledChan := make(chan a2a.TaskID, 1), make(chan struct{})
 	serverB := startA2AServer(&mockA2AExecutor{
+		cancelFn: func(ctx context.Context, reqCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+			return func(yield func(a2a.Event, error) bool) {
+				yield(a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateCanceled, nil), nil)
+			}
+		},
 		executeFn: func(ctx context.Context, reqCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 			return func(yield func(a2a.Event, error) bool) {
 				remoteTaskIDChan <- reqCtx.TaskID
@@ -1142,6 +1147,9 @@ func TestA2AMultiHopInputRequiredCancellation(t *testing.T) {
 		executeFn: func(ctx context.Context, reqCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 			return func(yield func(a2a.Event, error) bool) {
 				remoteTaskIDChan <- reqCtx.TaskID
+				if !yield(a2a.NewSubmittedTask(reqCtx, reqCtx.Message), nil) {
+					return
+				}
 				ev := a2a.NewStatusUpdateEvent(reqCtx, a2a.TaskStateInputRequired, a2a.NewMessage(a2a.MessageRoleAgent, &a2a.Part{
 					Content:  a2a.Data{Value: map[string]any{"id": "call-1", "name": "foo"}},
 					Metadata: map[string]any{"adk_is_long_running": true, "adk_type": "function_call"},

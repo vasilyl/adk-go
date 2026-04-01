@@ -22,7 +22,7 @@ import (
 	"google.golang.org/genai"
 
 	"google.golang.org/adk/agent"
-	"google.golang.org/adk/server/adka2a/v1"
+	"google.golang.org/adk/server/adka2a/v2"
 	"google.golang.org/adk/session"
 )
 

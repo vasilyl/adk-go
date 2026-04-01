@@ -26,7 +26,7 @@ import (
 	"google.golang.org/adk/agent"
 	icontext "google.golang.org/adk/internal/context"
 	"google.golang.org/adk/model"
-	"google.golang.org/adk/server/adka2a/v1"
+	"google.golang.org/adk/server/adka2a/v2"
 	"google.golang.org/adk/session"
 )
 

@@ -20,7 +20,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2acompat/a2av0"
 
 	"google.golang.org/adk/agent"
-	v1 "google.golang.org/adk/server/adka2a/v1"
+	v2 "google.golang.org/adk/server/adka2a/v2"
 	"google.golang.org/adk/session"
 	"google.golang.org/genai"
 )
@@ -28,40 +28,40 @@ import (
 // BuildAgentSkills attempts to create a list of [a2a.AgentSkill]s based on agent descriptions and types.
 // This information can be used in [a2a.AgentCard] to help clients understand agent capabilities.
 func BuildAgentSkills(agent agent.Agent) []a2a.AgentSkill {
-	v1Skills := v1.BuildAgentSkills(agent)
+	v1Skills := v2.BuildAgentSkills(agent)
 	card := a2av0.FromV1AgentCard(&v2a2a.AgentCard{Skills: v1Skills})
 	return card.Skills
 }
 
 // ToA2AMetaKey adds a prefix used to differentiage ADK-related values stored in Metadata an A2A event.
 func ToA2AMetaKey(key string) string {
-	return v1.ToA2AMetaKey(key)
+	return v2.ToA2AMetaKey(key)
 }
 
 // ToADKMetaKey adds a prefix used to differentiage A2A-related values stored in custom metadata of an ADK session event.
 func ToADKMetaKey(key string) string {
-	return v1.ToADKMetaKey(key)
+	return v2.ToADKMetaKey(key)
 }
 
 // ToCustomMetadata creates ADK custom metadata from A2A task and context IDs.
 func ToCustomMetadata(taskID a2a.TaskID, contextID string) map[string]any {
-	return v1.ToCustomMetadata(v2a2a.TaskID(taskID), contextID)
+	return v2.ToCustomMetadata(v2a2a.TaskID(taskID), contextID)
 }
 
 // GetA2ATaskInfo returns A2A task and context IDs if they are present in session event custom metadata.
 func GetA2ATaskInfo(event *session.Event) (a2a.TaskID, string) {
-	taskID, contextID := v1.GetA2ATaskInfo(event)
+	taskID, contextID := v2.GetA2ATaskInfo(event)
 	return a2a.TaskID(taskID), contextID
 }
 
 // NewRemoteAgentEvent create a new Event authored by the agent running in the provided invocation context.
 func NewRemoteAgentEvent(ctx agent.InvocationContext) *session.Event {
-	return v1.NewRemoteAgentEvent(ctx)
+	return v2.NewRemoteAgentEvent(ctx)
 }
 
 // EventToMessage converts the provided session event to A2A message.
 func EventToMessage(event *session.Event) (*a2a.Message, error) {
-	v1Msg, err := v1.EventToMessage(event)
+	v1Msg, err := v2.EventToMessage(event)
 	if err != nil {
 		return nil, err
 	}
@@ -71,25 +71,25 @@ func EventToMessage(event *session.Event) (*a2a.Message, error) {
 // ToSessionEvent converts the provided a2a event to session event authored by the agent running in the provided invocation context.
 func ToSessionEvent(ctx agent.InvocationContext, event a2a.Event) (*session.Event, error) {
 	v1Event, _ := a2av0.ToV1Event(event)
-	return v1.ToSessionEvent(ctx, v1Event)
+	return v2.ToSessionEvent(ctx, v1Event)
 }
 
 // IsPartial takes metadata of an A2A object (eg. a2a.Part, a2a.Artifact) and returs true if
 // it was marked as partial based on the ADK partial flag set on the original ADK object.
 func IsPartial(meta map[string]any) bool {
-	return v1.IsPartial(meta)
+	return v2.IsPartial(meta)
 }
 
 // IsPartialFlagSet takes metadata of an A2A object (eg. a2a.Part, a2a.Artifact) and returs true if
 // the ADK partial flag was set on it.
 func IsPartialFlagSet(meta map[string]any) bool {
-	return v1.IsPartialFlagSet(meta)
+	return v2.IsPartialFlagSet(meta)
 }
 
 // ToA2APart converts the provided genai part to A2A equivalent. Long running tool IDs are used for attaching metadata to
 // the relevant data parts.
 func ToA2APart(part *genai.Part, longRunningToolIDs []string) (a2a.Part, error) {
-	v1p, err := v1.ToA2APart(part, longRunningToolIDs)
+	v1p, err := v2.ToA2APart(part, longRunningToolIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +99,7 @@ func ToA2APart(part *genai.Part, longRunningToolIDs []string) (a2a.Part, error) 
 // ToA2AParts converts the provided genai parts to A2A equivalents. Long running tool IDs are used for attaching metadata to
 // the relevant data parts.
 func ToA2AParts(parts []*genai.Part, longRunningToolIDs []string) ([]a2a.Part, error) {
-	v1ps, err := v1.ToA2AParts(parts, longRunningToolIDs)
+	v1ps, err := v2.ToA2AParts(parts, longRunningToolIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func ToA2AParts(parts []*genai.Part, longRunningToolIDs []string) ([]a2a.Part, e
 
 // ToGenAIPart converts the provided A2A part to a genai equivalent.
 func ToGenAIPart(part a2a.Part) (*genai.Part, error) {
-	return v1.ToGenAIPart(a2av0.ToV1Part(part))
+	return v2.ToGenAIPart(a2av0.ToV1Part(part))
 }
 
 // ToGenAIParts converts the provided A2A parts to genai equivalents.
@@ -121,7 +121,7 @@ func ToGenAIParts(parts []a2a.Part) ([]*genai.Part, error) {
 	for i, p := range parts {
 		v1ps[i] = a2av0.ToV1Part(p)
 	}
-	return v1.ToGenAIParts(v1ps)
+	return v2.ToGenAIParts(v1ps)
 }
 
 // WithoutPartialArtifacts returns a slice of artifacts without partial artifacts.
@@ -133,7 +133,7 @@ func WithoutPartialArtifacts(artifacts []*a2a.Artifact) []*a2a.Artifact {
 		v1Artifacts = append(v1Artifacts, v1a)
 	}
 
-	filtered := v1.WithoutPartialArtifacts(v1Artifacts)
+	filtered := v2.WithoutPartialArtifacts(v1Artifacts)
 
 	result := make([]*a2a.Artifact, 0, len(filtered))
 	for _, f := range filtered {

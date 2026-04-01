@@ -14,7 +14,7 @@
 
 // Package remoteagent allows to use a remote ADK agents.
 //
-// Deprecated: Use google.golang.org/adk/agent/remoteagent/v1 instead.
+// Deprecated: Use google.golang.org/adk/agent/remoteagent/v2 instead.
 package remoteagent
 
 import (
@@ -29,7 +29,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2acompat/a2av0"
 
 	"google.golang.org/adk/agent"
-	v1 "google.golang.org/adk/agent/remoteagent/v1"
+	v2 "google.golang.org/adk/agent/remoteagent/v2"
 	"google.golang.org/adk/server/adka2a"
 	"google.golang.org/adk/session"
 )
@@ -127,7 +127,7 @@ func NewA2A(cfg A2AConfig) (agent.Agent, error) {
 		return nil, fmt.Errorf("either AgentCard or AgentCardSource must be provided")
 	}
 
-	v1Cfg := v1.A2AConfig{
+	v1Cfg := v2.A2AConfig{
 		Name:                 cfg.Name,
 		Description:          cfg.Description,
 		AgentCardSource:      cfg.AgentCardSource,
@@ -145,7 +145,7 @@ func NewA2A(cfg A2AConfig) (agent.Agent, error) {
 	}
 
 	if cfg.ClientFactory != nil {
-		v1Cfg.ClientProvider = func(ctx context.Context, card *v2a2a.AgentCard) (v1.A2AClient, error) {
+		v1Cfg.ClientProvider = func(ctx context.Context, card *v2a2a.AgentCard) (v2.A2AClient, error) {
 			legacyCard := a2av0.FromV1AgentCard(card)
 			var client *a2aclient.Client
 			var err error
@@ -170,7 +170,7 @@ func NewA2A(cfg A2AConfig) (agent.Agent, error) {
 	}
 
 	if cfg.BeforeRequestCallbacks != nil {
-		v1Cfg.BeforeRequestCallbacks = make([]v1.BeforeA2ARequestCallback, 0, len(cfg.BeforeRequestCallbacks))
+		v1Cfg.BeforeRequestCallbacks = make([]v2.BeforeA2ARequestCallback, 0, len(cfg.BeforeRequestCallbacks))
 		for _, cb := range cfg.BeforeRequestCallbacks {
 			v1Cfg.BeforeRequestCallbacks = append(v1Cfg.BeforeRequestCallbacks, func(ctx agent.CallbackContext, req *v2a2a.SendMessageRequest) (*session.Event, error) {
 				legacyReq := a2av0.FromV1SendMessageRequest(req)
@@ -189,7 +189,7 @@ func NewA2A(cfg A2AConfig) (agent.Agent, error) {
 	}
 
 	if cfg.AfterRequestCallbacks != nil {
-		v1Cfg.AfterRequestCallbacks = make([]v1.AfterA2ARequestCallback, 0, len(cfg.AfterRequestCallbacks))
+		v1Cfg.AfterRequestCallbacks = make([]v2.AfterA2ARequestCallback, 0, len(cfg.AfterRequestCallbacks))
 		for _, cb := range cfg.AfterRequestCallbacks {
 			v1Cfg.AfterRequestCallbacks = append(v1Cfg.AfterRequestCallbacks, func(ctx agent.CallbackContext, req *v2a2a.SendMessageRequest, resp *session.Event, err error) (*session.Event, error) {
 				legacyReq := a2av0.FromV1SendMessageRequest(req)
@@ -201,7 +201,7 @@ func NewA2A(cfg A2AConfig) (agent.Agent, error) {
 		}
 	}
 
-	return v1.NewA2A(v1Cfg)
+	return v2.NewA2A(v1Cfg)
 }
 
 type compatClient struct {

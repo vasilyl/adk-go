@@ -38,7 +38,7 @@ import (
 	"google.golang.org/adk/internal/utils"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/runner"
-	"google.golang.org/adk/server/adka2a/v1"
+	"google.golang.org/adk/server/adka2a/v2"
 	"google.golang.org/adk/session"
 )
 

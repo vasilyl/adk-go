@@ -99,12 +99,19 @@ func recursiveSmartTruncate(obj any, maxLength int) (any, bool, error) {
 		// Traverse into other complex types via reflection
 		val := reflect.ValueOf(obj)
 
-		// Unpack interfaces and pointers
-		for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
+		// Unpack interfaces and pointers with depth limit to prevent infinite loops
+		depth := 0
+		const maxDepth = 10
+		for (val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface) && depth < maxDepth {
 			if val.IsNil() {
 				return nil, false, nil
 			}
 			val = val.Elem()
+			depth++
+		}
+		if depth >= maxDepth {
+			// Fallback: treat as opaque object
+			return fmt.Sprintf("<deeply nested pointer: %T>", obj), false, nil
 		}
 
 		switch val.Kind() {

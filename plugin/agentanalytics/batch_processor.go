@@ -41,10 +41,11 @@ type BatchProcessor struct {
 	arrowSchema *arrow.Schema
 	allocator   memory.Allocator
 
-	ctx     context.Context
-	cancel  context.CancelFunc
-	done    chan struct{}
-	started bool // Track if Start() has been called.
+	ctx       context.Context
+	cancel    context.CancelFunc
+	done      chan struct{}
+	flushChan chan struct{}
+	started   bool // Track if Start() has been called.
 }
 
 // NewBatchProcessor creates a new BatchProcessor instance.
@@ -67,6 +68,7 @@ func NewBatchProcessor(ctx context.Context, writeClient *bqstorage.BigQueryWrite
 		ctx:          ctx,
 		cancel:       cancel,
 		done:         make(chan struct{}),
+		flushChan:    make(chan struct{}, 1),
 		started:      false,
 	}, nil
 }
@@ -94,6 +96,8 @@ func (b *BatchProcessor) Start() {
 					return
 				case <-ticker.C:
 					b.flush()
+				case <-b.flushChan:
+					b.flush()
 				}
 			}
 		}()
@@ -104,8 +108,11 @@ func (b *BatchProcessor) Start() {
 func (b *BatchProcessor) Append(row map[string]any) {
 	select {
 	case b.queue <- row:
-		if len(b.queue) == b.config.BatchSize {
-			go b.flush()
+		if len(b.queue) >= b.config.BatchSize {
+			select {
+			case b.flushChan <- struct{}{}:
+			default:
+			}
 		}
 	default:
 		if b.config.Logger != nil {
@@ -213,7 +220,8 @@ func (b *BatchProcessor) writeBatch(ctx context.Context, batch []map[string]any)
 				if v, ok := val.(time.Time); ok {
 					fieldVector.(*array.TimestampBuilder).Append(arrow.Timestamp(v.UnixMicro()))
 				} else {
-					fieldVector.AppendNull()
+					// Timestamp is non-nullable; use current time as fallback
+					fieldVector.(*array.TimestampBuilder).Append(arrow.Timestamp(time.Now().UnixMicro()))
 				}
 			case "event_type", "agent", "session_id", "invocation_id", "user_id", "trace_id", "span_id", "parent_span_id", "status", "error_message":
 				if v, ok := val.(string); ok {
@@ -473,6 +481,7 @@ func serializeRecord(record arrow.RecordBatch, logger Logger) []byte {
 // Close gracefully shuts down the processing loop, flushes, and stops.
 func (b *BatchProcessor) Close() {
 	b.cancel()
+	close(b.flushChan)
 	// Only wait on the done channel if the Start() goroutine was actually launched.
 	if b.started {
 		<-b.done

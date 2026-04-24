@@ -25,7 +25,7 @@ import (
 
 // FormatContentParts formats Content parts into a map array for BigQuery logging.
 func FormatContentParts(content *genai.Content, maxLength int) []map[string]any {
-	var parts []map[string]any
+	parts := []map[string]any{}
 	if content == nil || content.Parts == nil {
 		return parts
 	}
@@ -70,9 +70,38 @@ func SmartTruncate(obj any, maxLength int) ([]byte, bool, error) {
 }
 
 func recursiveSmartTruncate(obj any, maxLength int) (any, bool, error) {
+	return recursiveSmartTruncateInternal(obj, maxLength, make(map[uintptr]bool))
+}
+
+func recursiveSmartTruncateInternal(obj any, maxLength int, seen map[uintptr]bool) (any, bool, error) {
 	if obj == nil {
 		return nil, false, nil
 	}
+
+	val := reflect.ValueOf(obj)
+	for val.Kind() == reflect.Interface {
+		if val.IsNil() {
+			return nil, false, nil
+		}
+		val = val.Elem()
+	}
+
+	var ptr uintptr
+	switch val.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice:
+		if !val.IsNil() {
+			ptr = val.Pointer()
+		}
+	}
+
+	if ptr != 0 {
+		if seen[ptr] {
+			return "[CIRCULAR_REFERENCE]", false, nil
+		}
+		seen[ptr] = true
+		defer delete(seen, ptr)
+	}
+
 	truncated := false
 
 	switch v := obj.(type) {
@@ -82,7 +111,11 @@ func recursiveSmartTruncate(obj any, maxLength int) (any, bool, error) {
 	case map[string]any:
 		newMap := make(map[string]any)
 		for k, val := range v {
-			tVal, t, _ := recursiveSmartTruncate(val, maxLength)
+			if isSensitiveKey(k) {
+				newMap[k] = "[REDACTED]"
+				continue
+			}
+			tVal, t, _ := recursiveSmartTruncateInternal(val, maxLength, seen)
 			newMap[k] = tVal
 			truncated = truncated || t
 		}
@@ -90,7 +123,7 @@ func recursiveSmartTruncate(obj any, maxLength int) (any, bool, error) {
 	case []any:
 		newArr := make([]any, len(v))
 		for i, val := range v {
-			tVal, t, _ := recursiveSmartTruncate(val, maxLength)
+			tVal, t, _ := recursiveSmartTruncateInternal(val, maxLength, seen)
 			newArr[i] = tVal
 			truncated = truncated || t
 		}
@@ -99,19 +132,12 @@ func recursiveSmartTruncate(obj any, maxLength int) (any, bool, error) {
 		// Traverse into other complex types via reflection
 		val := reflect.ValueOf(obj)
 
-		// Unpack interfaces and pointers with depth limit to prevent infinite loops
-		depth := 0
-		const maxDepth = 10
-		for (val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface) && depth < maxDepth {
+		// Unpack interfaces and pointers
+		for val.Kind() == reflect.Ptr || val.Kind() == reflect.Interface {
 			if val.IsNil() {
 				return nil, false, nil
 			}
 			val = val.Elem()
-			depth++
-		}
-		if depth >= maxDepth {
-			// Fallback: treat as opaque object
-			return fmt.Sprintf("<deeply nested pointer: %T>", obj), false, nil
 		}
 
 		switch val.Kind() {
@@ -136,7 +162,12 @@ func recursiveSmartTruncate(obj any, maxLength int) (any, bool, error) {
 					}
 				}
 
-				tVal, t, _ := recursiveSmartTruncate(val.Field(i).Interface(), maxLength)
+				if isSensitiveKey(name) {
+					newMap[name] = "[REDACTED]"
+					continue
+				}
+
+				tVal, t, _ := recursiveSmartTruncateInternal(val.Field(i).Interface(), maxLength, seen)
 				newMap[name] = tVal
 				truncated = truncated || t
 			}
@@ -145,7 +176,7 @@ func recursiveSmartTruncate(obj any, maxLength int) (any, bool, error) {
 		case reflect.Slice, reflect.Array:
 			newArr := make([]any, val.Len())
 			for i := 0; i < val.Len(); i++ {
-				tVal, t, _ := recursiveSmartTruncate(val.Index(i).Interface(), maxLength)
+				tVal, t, _ := recursiveSmartTruncateInternal(val.Index(i).Interface(), maxLength, seen)
 				newArr[i] = tVal
 				truncated = truncated || t
 			}
@@ -156,7 +187,11 @@ func recursiveSmartTruncate(obj any, maxLength int) (any, bool, error) {
 			for _, key := range val.MapKeys() {
 				// Best effort for map keys
 				kStr := fmt.Sprintf("%v", key.Interface())
-				tVal, t, _ := recursiveSmartTruncate(val.MapIndex(key).Interface(), maxLength)
+				if isSensitiveKey(kStr) {
+					newMap[kStr] = "[REDACTED]"
+					continue
+				}
+				tVal, t, _ := recursiveSmartTruncateInternal(val.MapIndex(key).Interface(), maxLength, seen)
 				newMap[kStr] = tVal
 				truncated = truncated || t
 			}
@@ -182,4 +217,16 @@ func truncateString(s string, maxLength int) (string, bool) {
 		return s, false
 	}
 	return string(r[:maxLength]) + "...[truncated]", true
+}
+
+func isSensitiveKey(k string) bool {
+	kLower := strings.ToLower(k)
+	switch kLower {
+	case "client_secret", "access_token", "refresh_token", "id_token", "api_key", "password":
+		return true
+	}
+	if strings.HasPrefix(kLower, "temp:") {
+		return true
+	}
+	return false
 }

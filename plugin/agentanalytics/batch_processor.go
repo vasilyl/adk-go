@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bqstorage "cloud.google.com/go/bigquery/storage/apiv1"
@@ -45,7 +46,7 @@ type BatchProcessor struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	flushChan chan struct{}
-	started   bool // Track if Start() has been called.
+	started   atomic.Bool // Track if Start() has been called.
 }
 
 // NewBatchProcessor creates a new BatchProcessor instance.
@@ -69,14 +70,12 @@ func NewBatchProcessor(ctx context.Context, writeClient *bqstorage.BigQueryWrite
 		cancel:       cancel,
 		done:         make(chan struct{}),
 		flushChan:    make(chan struct{}, 1),
-		started:      false,
 	}, nil
 }
 
 // Start begins the background goroutine to process and flush the queue periodically.
 func (b *BatchProcessor) Start() {
-	if !b.started {
-		b.started = true
+	if b.started.CompareAndSwap(false, true) {
 		go func() {
 			defer close(b.done)
 			ticker := time.NewTicker(b.config.BatchFlushIntv)
@@ -87,7 +86,7 @@ func (b *BatchProcessor) Start() {
 				case <-b.ctx.Done():
 					shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(b.ctx), b.config.ShutdownTimeout)
 					defer cancel()
-					for len(b.queue) > 0 {
+					for len(b.queue) > 0 && shutdownCtx.Err() == nil {
 						b.blockingFlush(shutdownCtx) // Force flush remaining on shutdown
 					}
 					// Wait for any concurrent background flushes to finish
@@ -389,9 +388,6 @@ func newStreamWriter(client *bqstorage.BigQueryWriteClient, streamName string, s
 }
 
 func (s *streamWriter) append(ctx context.Context, recordBatch arrow.RecordBatch) (*storagepb.AppendRowsResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	var lastErr error
 	delay := s.config.RetryConfig.InitialDelay
 
@@ -408,50 +404,56 @@ func (s *streamWriter) append(ctx context.Context, recordBatch arrow.RecordBatch
 			}
 		}
 
-		var err error
-		if s.stream == nil {
-			s.stream, err = s.writeClient.AppendRows(ctx)
-			if err != nil {
-				lastErr = fmt.Errorf("failed to open append rows stream: %w", err)
-				continue
+		res, err := func() (*storagepb.AppendRowsResponse, error) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+
+			if s.stream == nil {
+				var err error
+				s.stream, err = s.writeClient.AppendRows(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("failed to open append rows stream: %w", err)
+				}
 			}
-		}
 
-		batchBytes := serializeRecord(recordBatch, s.config.Logger)
-		if batchBytes == nil {
-			lastErr = fmt.Errorf("failed to serialize record batch")
-			continue
-		}
+			batchBytes := serializeRecord(recordBatch, s.config.Logger)
+			if batchBytes == nil {
+				return nil, fmt.Errorf("failed to serialize record batch")
+			}
 
-		req := &storagepb.AppendRowsRequest{
-			WriteStream: s.streamName,
-			Rows: &storagepb.AppendRowsRequest_ArrowRows{
-				ArrowRows: &storagepb.AppendRowsRequest_ArrowData{
-					WriterSchema: &storagepb.ArrowSchema{
-						SerializedSchema: s.schemaBytes,
-					},
-					Rows: &storagepb.ArrowRecordBatch{
-						SerializedRecordBatch: batchBytes,
-						RowCount:              recordBatch.NumRows(),
+			req := &storagepb.AppendRowsRequest{
+				WriteStream: s.streamName,
+				Rows: &storagepb.AppendRowsRequest_ArrowRows{
+					ArrowRows: &storagepb.AppendRowsRequest_ArrowData{
+						WriterSchema: &storagepb.ArrowSchema{
+							SerializedSchema: s.schemaBytes,
+						},
+						Rows: &storagepb.ArrowRecordBatch{
+							SerializedRecordBatch: batchBytes,
+							RowCount:              recordBatch.NumRows(),
+						},
 					},
 				},
-			},
-		}
+			}
 
-		if err := s.stream.Send(req); err != nil {
-			s.stream = nil // Reset stream on send error
-			lastErr = fmt.Errorf("failed to send row batch: %w", err)
-			continue
-		}
+			if err := s.stream.Send(req); err != nil {
+				s.stream = nil // Reset stream on send error
+				return nil, fmt.Errorf("failed to send row batch: %w", err)
+			}
 
-		res, err := s.stream.Recv()
-		if err != nil {
-			s.stream = nil // Reset stream on receive error
-			lastErr = fmt.Errorf("failed to receive response for row batch: %w", err)
-			continue
-		}
+			res, err := s.stream.Recv()
+			if err != nil {
+				s.stream = nil // Reset stream on receive error
+				return nil, fmt.Errorf("failed to receive response for row batch: %w", err)
+			}
 
-		return res, nil
+			return res, nil
+		}()
+
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
 	}
 
 	return nil, fmt.Errorf("max retries exceeded: %w", lastErr)
@@ -483,7 +485,7 @@ func (b *BatchProcessor) Close() {
 	b.cancel()
 	close(b.flushChan)
 	// Only wait on the done channel if the Start() goroutine was actually launched.
-	if b.started {
+	if b.started.Load() {
 		<-b.done
 	}
 }

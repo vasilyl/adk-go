@@ -20,6 +20,7 @@ import (
 	bq "cloud.google.com/go/bigquery"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
 // EventsSchema returns the BigQuery schema for the events table.
@@ -142,11 +143,11 @@ func ArrowSchema() *arrow.Schema {
 // SerializedArrowSchema returns the serialized Arrow schema for the events table.
 func SerializedArrowSchema() ([]byte, error) {
 	schema := ArrowSchema()
+	payload := ipc.GetSchemaPayload(schema, memory.NewGoAllocator())
+	defer payload.Release()
+
 	var buf bytes.Buffer
-	wr := ipc.NewWriter(&buf, ipc.WithSchema(schema))
-	// We only need the schema itself, so we close cleanly
-	err := wr.Close()
-	if err != nil {
+	if _, err := payload.WritePayload(&buf); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil

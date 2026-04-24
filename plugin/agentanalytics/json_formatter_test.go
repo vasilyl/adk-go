@@ -201,6 +201,34 @@ func TestSmartTruncate(t *testing.T) {
 			wantStr:   `["very long ...[truncated]"]`,
 			wantTrunc: true,
 		},
+		{
+			name: "map with sensitive keys",
+			obj: map[string]any{
+				"client_secret": "my super secret secret",
+				"temp:internal": "temporary sensitive data",
+				"normal_key":    "hello world longer string",
+			},
+			maxLength: 10,
+			wantStr:   `{"client_secret":"[REDACTED]","normal_key":"hello worl...[truncated]","temp:internal":"[REDACTED]"}`,
+			wantTrunc: true,
+		},
+		{
+			name: "struct with sensitive fields",
+			obj: struct {
+				APIKey      string `json:"api_key"`
+				Password    string
+				AccessToken string `json:"access_token"`
+				NormalField string
+			}{
+				APIKey:      "sensitive_key_value",
+				Password:    "sensitive_password",
+				AccessToken: "sensitive_token",
+				NormalField: "short",
+			},
+			maxLength: 10,
+			wantStr:   `{"NormalField":"short","Password":"[REDACTED]","access_token":"[REDACTED]","api_key":"[REDACTED]"}`,
+			wantTrunc: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -229,5 +257,28 @@ func TestSmartTruncate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCircularReference(t *testing.T) {
+	m := make(map[string]any)
+	m["self"] = m
+	m["data"] = "normal"
+
+	gotBytes, _, err := SmartTruncate(m, 100)
+	if err != nil {
+		t.Fatalf("SmartTruncate() unexpected error for circular ref: %v", err)
+	}
+
+	var gotObj map[string]any
+	if err := json.Unmarshal(gotBytes, &gotObj); err != nil {
+		t.Fatalf("Failed to unmarshal output: %v", err)
+	}
+
+	if gotObj["data"] != "normal" {
+		t.Errorf("expected normal key to be preserved, got %v", gotObj["data"])
+	}
+	if gotObj["self"] != "[CIRCULAR_REFERENCE]" {
+		t.Errorf("expected self to be [CIRCULAR_REFERENCE], got %v", gotObj["self"])
 	}
 }
